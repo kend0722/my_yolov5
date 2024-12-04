@@ -1,6 +1,7 @@
 # YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 """
-YOLO-specific modules
+这是YOLOv5模型的一部分实现，主要涉及检测（Detect）和分割（Segment）头部的定义
+以及基础模型（BaseModel）和检测模型（DetectionModel）的定义。
 
 Usage:
     $ python models/yolo.py --cfg yolov5s.yaml
@@ -34,25 +35,67 @@ try:
 except ImportError:
     thop = None
 
+"""
+Detect 类：
+用于YOLOv5的检测头部，负责生成最终的检测结果。
+__init__ 方法初始化检测层，包括锚点、卷积层等。
+forward 方法执行前向传播，生成检测框和置信度。
+_make_grid 方法用于生成网格和锚点网格。
+Segment 类：
+继承自 Detect 类，用于YOLOv5的分割头部。
+增加了分割掩码的生成部分。
+forward 方法除了生成检测框外，还生成分割掩码。
+
+BaseModel 类：
+YOLOv5的基础模型类，提供了前向传播、性能分析、模型融合等功能。
+forward 和 _forward_once 方法实现了单尺度推理和训练。
+fuse 方法用于融合卷积层和批量归一化层。
+info 方法用于打印模型信息。
+
+DetectionModel 类：
+继承自 BaseModel 类，用于构建YOLOv5的检测模型。
+__init__ 方法初始化模型，读取配置文件并构建模型结构。
+forward 方法支持标准前向传播和增强推理。
+_forward_augment 方法用于增强推理，通过不同尺度和翻转进行预测。
+_descale_pred 和 _clip_augmented 方法用于处理增强推理后的预测结果。
+"""
+
+
 
 class Detect(nn.Module):
-    # YOLOv5 Detect head for detection models
+    """ YOLOv5的检测头部 """
+
     stride = None  # strides computed during build
     dynamic = False  # force grid reconstruction
     export = False  # export mode
 
+    """
+    初始化操作：
+        nc (int): 类别数，默认为 80。
+        anchors (list): 锚点列表，默认为空。
+        ch (list): 输入通道数列表，默认为空。
+        inplace (bool): 是否使用原地操作，默认为 True。
+    """
     def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
         super().__init__()
-        self.nc = nc  # number of classes
-        self.no = nc + 5  # number of outputs per anchor
-        self.nl = len(anchors)  # number of detection layers
-        self.na = len(anchors[0]) // 2  # number of anchors
-        self.grid = [torch.empty(0) for _ in range(self.nl)]  # init grid
-        self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # init anchor grid
-        self.register_buffer('anchors', torch.tensor(anchors).float().view(self.nl, -1, 2))  # shape(nl,na,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.inplace = inplace  # use inplace ops (e.g. slice assignment)
+        self.nc = nc  # 类别数，默认为 80。
+        self.no = nc + 5  # 每个锚点的输出数，等于类别数加上 5（4 个坐标值和 1 个置信度）。
+        self.nl = len(anchors)  # 检测层的数量，即锚点列表的长度。
+        self.na = len(anchors[0]) // 2  # 每个检测层的锚点数量，等于每个锚点列表的一半。
+        self.grid = [torch.empty(0) for _ in range(self.nl)]  # 存储网格的列表，初始化为空张量。
+        self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # 存储锚点网格的列表，初始化为空张量。
+        self.register_buffer('anchors', torch.tensor(anchors).float().view(self.nl, -1, 2))  # 注册缓冲区，存储锚点，形状为 (nl, na, 2)。
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # 卷积层列表，每个检测层对应一个卷积层，输出通道数为 no * na。
+        self.inplace = inplace  # 是否使用原地操作。
 
+    """
+    forward 方法：
+        对输入的 x 进行前向传播，生成检测框和置信度。
+        首先，根据输入的 x 的形状，确定输出的形状，并初始化输出张量。
+        然后，遍历每个检测层，执行卷积操作，并调整输出张量的形状。
+        如果当前层是 YOLOv5 的训练模式，则直接返回输出张量。
+        否则，执行推理操作，包括生成锚点网格，计算检测框和置信度，并返回结果。
+    """
     def forward(self, x):
         z = []  # inference output
         for i in range(self.nl):
