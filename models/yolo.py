@@ -63,16 +63,16 @@ _descale_pred 和 _clip_augmented 方法用于处理增强推理后的预测结�
 
 
 class Detect(nn.Module):
-    """ YOLOv5的检测头部 """
+    """ YOLOv5的检测头部 负责生成边界框和类别预测。"""
 
-    stride = None  # strides computed during build
-    dynamic = False  # force grid reconstruction
-    export = False  # export mode
+    stride = None  # 步长，构建时计算。即特征图相对于输入图像的缩放比例。它在构建时会根据模型的配置进行计算。
+    dynamic = False  # 是否强制重建网格。表示是否在每次推理时动态重建网格。默认为 False，即只有在网格尺寸变化时才会重建。
+    export = False  # 是否为导出模式。
 
     """
     初始化操作：
-        nc (int): 类别数，默认为 80。
-        anchors (list): 锚点列表，默认为空。
+        nc (int): 类别数，默认为 80。（COCO 数据集的类别数）
+        anchors (list): 锚点列表，默认为空。用于生成不同尺度的边界框。
         ch (list): 输入通道数列表，默认为空。
         inplace (bool): 是否使用原地操作，默认为 True。
     """
@@ -80,13 +80,14 @@ class Detect(nn.Module):
         super().__init__()
         self.nc = nc  # 类别数，默认为 80。
         self.no = nc + 5  # 每个锚点的输出数，等于类别数加上 5（4 个坐标值和 1 个置信度）。
-        self.nl = len(anchors)  # 检测层的数量，即锚点列表的长度。
-        self.na = len(anchors[0]) // 2  # 每个检测层的锚点数量，等于每个锚点列表的一半。
-        self.grid = [torch.empty(0) for _ in range(self.nl)]  # 存储网格的列表，初始化为空张量。
-        self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # 存储锚点网格的列表，初始化为空张量。
-        self.register_buffer('anchors', torch.tensor(anchors).float().view(self.nl, -1, 2))  # 注册缓冲区，存储锚点，形状为 (nl, na, 2)。
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # 卷积层列表，每个检测层对应一个卷积层，输出通道数为 no * na。
-        self.inplace = inplace  # 是否使用原地操作。
+        self.nl = len(anchors)  # 检测层的数量，即锚点列表的长度。YOLOv5 通常有多个检测层，每个层负责不同的尺度。
+        self.na = len(anchors[0]) // 2  # 每个检测层的锚点数量，等于 anchors[0] 的长度除以 2。因为每个锚点有两个值（宽度和高度），所以需要除以 2。
+        self.grid = [torch.empty(0) for _ in range(self.nl)]  # 这个列表用于存储每个检测层的网格信息。网格信息用于将预测的相对坐标转换为绝对坐标。
+        self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # 这个列表用于存储每个检测层的锚点网格信息。锚点网格用于调整预测的边界框大小。
+        self.register_buffer('anchors', torch.tensor(anchors).float().view(self.nl, -1,
+                                                                           2))  # 注册一个缓冲区（buffer），用于存储不参与梯度计算的张量，形状为 (nl, na, 2) nl 是检测层数，na 是每个检测层的锚点数，2 表示每个锚点的宽度和高度。
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # 卷积层列表，每个检测层对应一个卷积层，输出通道数为 no * na。即每个锚点的输出数乘以锚点数量。卷积核大小为 1x1。
+        self.inplace = inplace  # 是否使用原地操作。原地操作可以节省内存，但可能会破坏输入数据。
 
     """
     forward 方法：
@@ -97,16 +98,30 @@ class Detect(nn.Module):
         否则，执行推理操作，包括生成锚点网格，计算检测框和置信度，并返回结果。
     """
     def forward(self, x):
-        z = []  # inference output
+        """
+        Args:
+            x: x (list): 输入特征图列表，每个元素对应一个检测层的特征图。
+        Returns:
+            如果在训练模式下，返回 x。
+            如果在推理模式下且导出模式开启，返回拼接后的检测结果。
+            否则，返回拼接后的检测结果和输入特征图。
+        """
+        # 对每个检测层的特征图进行卷积操作。
+        z = []  # 空列表，用于存储每个检测层的推理输出。
+        # 遍历每个检测层。
         for i in range(self.nl):
-            x[i] = self.m[i](x[i])  # conv
-            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
-
+            x[i] = self.m[i](x[i])  # 对第 i 个检测层的特征图 x[i] 应用卷积层 self.m[i]，得到卷积后的输出。
+            bs, _, ny, nx = x[i].shape  # 获取卷积后特征图的形状，bs 是批量大小，ny 和 nx 分别是特征图的高度和宽度。
+            # 将卷积后的特征图重新排列成形状为 (bs, na, no, ny, nx) 的张量。na 是锚点数量，no 是每个锚点的输出数。
+            # permute(0, 1, 3, 4, 2)：交换维度顺序，使得最终的形状为 (bs, na, ny, nx, no)。这样可以方便后续的操作
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()  # contiguous()：确保张量在内存中是连续的，避免潜在的性能问题。
+            # 推理模式
             if not self.training:  # inference
+                # 如果需要动态重建网格 或 当前网格的尺寸与特征图的尺寸不匹配。
                 if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    # 调用 _make_grid 方法生成新的网格和锚点网格。并更新 self.grid[i] 和 self.anchor_grid[i]。
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
-
+                # 如果是Segment类的实例，则表示该模型不仅预测边界框，还预测分割掩码（masks）
                 if isinstance(self, Segment):  # (boxes + masks)
                     xy, wh, conf, mask = x[i].split((2, 2, self.nc + 1, self.no - self.nc - 5), 4)
                     xy = (xy.sigmoid() * 2 + self.grid[i]) * self.stride[i]  # xy
@@ -120,16 +135,33 @@ class Detect(nn.Module):
                 z.append(y.view(bs, self.na * nx * ny, self.no))
 
         return x if self.training else (torch.cat(z, 1),) if self.export else (torch.cat(z, 1), x)
-
+    """ 生成网格和锚点网格的方法 """
     def _make_grid(self, nx=20, ny=20, i=0, torch_1_10=check_version(torch.__version__, '1.10.0')):
+        """
+        Args:
+            nx: nx (int): 网格的宽度，默认为 20。
+            ny: ny (int): 网格的高度，默认为 20。
+            i: i (int): 检测层的索引，默认为 0。
+            torch_1_10: torch_1_10 (bool): 检查是否使用 PyTorch 1.10 及以上版本的meshgrid方法
+        Returns:
+            grid (Tensor): 网格张量，形状为 (1, na, ny, nx, 2)。
+            anchor_grid (Tensor): 锚点网格张量，形状为 (1, na, ny, nx, 2)。
+        """
+        # 获取当前设备和数据类型。
         d = self.anchors[i].device
         t = self.anchors[i].dtype
+        # 定义网格的形状。
         shape = 1, self.na, ny, nx, 2  # grid shape
         y, x = torch.arange(ny, device=d, dtype=t), torch.arange(nx, device=d, dtype=t)
+        # 使用 torch.meshgrid 生成网格的 x 和 y 坐标。
         yv, xv = torch.meshgrid(y, x, indexing='ij') if torch_1_10 else torch.meshgrid(y, x)  # torch>=0.7 compatibility
+        # 将 x 和 y 坐标堆叠成网格张量，并扩展到指定的形状。
         grid = torch.stack((xv, yv), 2).expand(shape) - 0.5  # add grid offset, i.e. y = 2.0 * x - 0.5
+        # 计算锚点网格，并扩展到指定的形状
         anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.na, 1, 1, 2)).expand(shape)
+        # 返回生成的网格和锚点网格。
         return grid, anchor_grid
+
 
 
 class Segment(Detect):
