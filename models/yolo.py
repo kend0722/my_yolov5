@@ -181,13 +181,28 @@ class Segment(Detect):
         return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
 
 
+
+"""
+yolov5的模型的基类，定义了一些通用的方法和属性，适用于所有基于 YOLOv5 的模型
+"""
 class BaseModel(nn.Module):
     # YOLOv5 base model
+
+    # 模型的主前向传播方法。它调用了 _forward_once 方法来进行单尺度推理或训练。
     def forward(self, x, profile=False, visualize=False):
+        """
+        Args:
+            x: 输入张量，形状为 [batch_size, channels, height, width] 的图像张量。
+            profile：是否启用性能分析（如计算每层的 FLOPs 和推理时间）。
+            visualize：是否启用特征图可视化。
+        Returns:
+        """
         return self._forward_once(x, profile, visualize)  # single-scale inference, train
 
     def _forward_once(self, x, profile=False, visualize=False):
+        """ 这是模型的实际前向传播逻辑 """
         y, dt = [], []  # outputs
+        # 遍历模型的每个模块，执行前向传播操作。
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -200,6 +215,10 @@ class BaseModel(nn.Module):
         return x
 
     def _profile_one_layer(self, m, x, dt):
+        """
+        这个方法用于性能分析，记录每个层的 FLOPs（浮点运算次数）和推理时间。
+        它通过多次运行该层来获得更准确的时间测量。
+        """
         c = m == self.model[-1]  # is final layer, copy input as inplace fix
         o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPs
         t = time_sync()
@@ -213,6 +232,9 @@ class BaseModel(nn.Module):
             LOGGER.info(f"{sum(dt):10.2f} {'-':>10s} {'-':>10s}  Total")
 
     def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
+        """
+        这个方法用于融合卷积层和批归一化层（BatchNorm2d）。融合后的模型在推理时可以减少计算量，提高推理速度。
+        """
         for m in self.model.modules():
             if isinstance(m, (Conv, DWConv)) and hasattr(m, 'bn'):
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
@@ -222,6 +244,7 @@ class BaseModel(nn.Module):
         return self
 
     def info(self, verbose=False, img_size=640):  # print model information
+        """ 这个方法用于打印模型的详细信息，包括层数、参数数量、FLOPs 等。你可以通过设置 verbose=True 来获得更详细的输出。"""
         model_info(self, verbose, img_size)
 
     def _apply(self, fn):

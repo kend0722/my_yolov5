@@ -318,7 +318,7 @@ def is_blurred(image):
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    image = cv2.imread("zidane.jpg")
+    image = cv2.imread("demo01.jpg")
     print(image.shape)  # (720, 1280, 3)
     # cv2.namedWindow("ori_image", cv2.WINDOW_NORMAL)
     # cv2.imshow("ori_image", image)
@@ -330,7 +330,7 @@ if __name__ == "__main__":
     # cv2.waitKey(0)
 
     # 使用 letterbox 函数处理图像
-    img, *_ = letterbox(image)
+    img, *_ = letterbox(image, new_shape=(1580, 1580))
 
     # 使用 matplotlib 显示图像
     plt.figure(figsize=(12, 6))

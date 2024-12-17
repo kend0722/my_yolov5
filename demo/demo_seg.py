@@ -16,7 +16,6 @@ from yolov_model import *
 def iou(location, other, illegal):
     bboxes = np.array(other)[:, 2:].astype(np.int16)
     x1 = bboxes[:, 0]
-    x1 = bboxes[:, 0]
     y1 = bboxes[:, 1]
     x2 = bboxes[:, 2]
     y2 = bboxes[:, 3]
