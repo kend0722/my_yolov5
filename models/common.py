@@ -1,6 +1,6 @@
 # YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 """
-Common modules
+yolov5框架中自定义的模型模块的集合。
 """
 
 import ast

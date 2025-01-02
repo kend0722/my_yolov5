@@ -212,7 +212,6 @@ class BaseModel(nn.Module):
                 如果 m.f 是一个整数，直接从 y[m.f] 获取输入；
                 如果是整数列表，则从多个层获取输入，并将它们组合成一个列表。
                 """
-                # TODO 理解
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
 
             # 是否启用性能分析
@@ -283,7 +282,6 @@ class BaseModel(nn.Module):
         # 如果是检测层或者分割层，则更新其 stride、grid 和 anchor_grid。
         if isinstance(m, (Detect, Segment)):
             # 确保其 stride、grid 和 anchor_grid 属性也被正确转换。
-            # TODO 需要理解
             m.stride = fn(m.stride)
             m.grid = list(map(fn, m.grid))
             if isinstance(m.anchor_grid, list):
