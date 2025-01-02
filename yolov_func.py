@@ -297,6 +297,7 @@ def is_backlit(image):
     # return '背光程度', hist[200:256].sum()
     mean_val = np.mean(hist)
 
+
     # 转换为yuv亮度通道
     yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
     y, u, v = cv2.split(yuv)

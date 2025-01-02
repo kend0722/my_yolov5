@@ -1,7 +1,7 @@
 
 # Description: 将yolov5框架提取出来，然后打包成一个库
 # ----------------------------------------
-import os, sys
+import os,  sys
 
 sys.path.insert(0, os.path.abspath(__file__)[:-12])
 from .yolov_model import DetectMultiBackend
