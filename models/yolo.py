@@ -183,7 +183,7 @@ class Segment(Detect):
 
 
 """
-yolov5的模型的基类，定义了一些通用的方法和属性，适用于所有基于 YOLOv5 的模型
+yolov5的模型的基类，定义了一些通用的方法和属性，适用于所有基于YOLOv5的模型
 """
 class BaseModel(nn.Module):
     # YOLOv5 base model
@@ -201,17 +201,38 @@ class BaseModel(nn.Module):
 
     def _forward_once(self, x, profile=False, visualize=False):
         """ 这是模型的实际前向传播逻辑 """
-        y, dt = [], []  # outputs
-        # 遍历模型的每个模块，执行前向传播操作。
+        y, dt = [], []  # outputs 分别用于存储每一层的输出和性能分析的时间数据
+        # 遍历模型的每个模块 m ，执行前向传播操作。
         for m in self.model:
-            if m.f != -1:  # if not from previous layer
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            # # 如果 m.f != -1，则从之前的层获取输入x -> 跳跃连接
+            if m.f != -1:
+                """ 
+                m.f：这是当前模块 m 的一个属性，通常是一个整数或整数列表。它表示了当前模块的输入来自模型中哪些层的输出。
+                根据 m.f 的类型，灵活地选择当前模块的输入来源。
+                如果 m.f 是一个整数，直接从 y[m.f] 获取输入；
+                如果是整数列表，则从多个层获取输入，并将它们组合成一个列表。
+                """
+                # TODO 理解
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+
+            # 是否启用性能分析
             if profile:
                 self._profile_one_layer(m, x, dt)
+            # 每一层的前向传播操作
             x = m(x)  # run
-            y.append(x if m.i in self.save else None)  # save output
+            # m.i：这是当前模块 m 的索引，表示该模块在整个模型中的位置。
+            # 通常，m.i 是一个整数，从 0 开始递增，对应于模型中每个模块的顺序。
+            y.append(x if m.i in self.save else None)  # 将当前模块的输出添加到 y 中，如果该层需要保存输出。
+            # 保存特征图
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+        # TODO 为什么不是返回y,而是x
+        """
+        x：这是当前模块的输入或输出张量。在前向传播过程中，x 会随着每一层的计算不断更新，最终成为模型的最终输出。
+        因此，x 包含了经过所有层处理后的特征图或预测结果。
+        y：这是一个列表，用于存储每一层的输出（如果该层的输出需要被保存）。具体来说，y 中的元素可能是某个特定层的输出张量，也可能是 None（对于不需要保存的层）。
+        y 的主要用途是为后续的跳跃连接（skip connections）或多尺度特征融合提供输入来源。
+        """
         return x
 
     def _profile_one_layer(self, m, x, dt):
@@ -219,15 +240,18 @@ class BaseModel(nn.Module):
         这个方法用于性能分析，记录每个层的 FLOPs（浮点运算次数）和推理时间。
         它通过多次运行该层来获得更准确的时间测量。
         """
-        c = m == self.model[-1]  # is final layer, copy input as inplace fix
-        o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPs
+        c = m == self.model[-1]  # 检查是否是最后一层，如果是，则复制输入以避免原地修改。
+        o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # 使用 thop.profile 计算该层的 FLOPs。
         t = time_sync()
+        # 记录该层的推理时间，通过多次运行该层来获得更准确的测量。
         for _ in range(10):
             m(x.copy() if c else x)
         dt.append((time_sync() - t) * 100)
         if m == self.model[0]:
             LOGGER.info(f"{'time (ms)':>10s} {'GFLOPs':>10s} {'params':>10s}  module")
+        # 打印该层的性能信息，包括时间、FLOPs 和参数数量。
         LOGGER.info(f'{dt[-1]:10.2f} {o:10.2f} {m.np:10.0f}  {m.type}')
+        # 如果是最后一层，打印总的时间。
         if c:
             LOGGER.info(f"{sum(dt):10.2f} {'-':>10s} {'-':>10s}  Total")
 
@@ -235,23 +259,31 @@ class BaseModel(nn.Module):
         """
         这个方法用于融合卷积层和批归一化层（BatchNorm2d）。融合后的模型在推理时可以减少计算量，提高推理速度。
         """
+        # 遍历模型的所有模块，查找 Conv 或 DWConv 层，并检查它们是否有 bn 属性。
         for m in self.model.modules():
             if isinstance(m, (Conv, DWConv)) and hasattr(m, 'bn'):
+                # 如果存在 bn，则调用 fuse_conv_and_bn 函数融合卷积层和批归一化层。
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
+                # 删除 bn 属性
                 delattr(m, 'bn')  # remove batchnorm
+                # 并更新前向传播方法为 forward_fuse
                 m.forward = m.forward_fuse  # update forward
+        # 调用 info 方法打印融合后的模型信息
         self.info()
         return self
 
     def info(self, verbose=False, img_size=640):  # print model information
-        """ 这个方法用于打印模型的详细信息，包括层数、参数数量、FLOPs 等。你可以通过设置 verbose=True 来获得更详细的输出。"""
+        """ 这个方法用于打印模型的详细信息，包括层数、参数数量、FLOPs 等。可以通过设置 verbose=True 来获得更详细的输出。"""
         model_info(self, verbose, img_size)
 
     def _apply(self, fn):
-        # Apply to(), cpu(), cuda(), half() to model tensors that are not parameters or registered buffers
+        # 重写了 nn.Module 的 _apply 方法，用于应用一些变换（如 .to(), .cpu(), .cuda(), .half()）到模型中的张量。
         self = super()._apply(fn)
         m = self.model[-1]  # Detect()
+        # 如果是检测层或者分割层，则更新其 stride、grid 和 anchor_grid。
         if isinstance(m, (Detect, Segment)):
+            # 确保其 stride、grid 和 anchor_grid 属性也被正确转换。
+            # TODO 需要理解
             m.stride = fn(m.stride)
             m.grid = list(map(fn, m.grid))
             if isinstance(m.anchor_grid, list):
@@ -259,19 +291,30 @@ class BaseModel(nn.Module):
         return self
 
 
+# NOTE: 主要是对整个yolov5的网络结构进行解析，实例化后的model就是yaml文件代表的内容
 class DetectionModel(BaseModel):
     # YOLOv5 detection model
     def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+        """
+        Args:
+            cfg: 模型配置文件的路径或字典。
+            ch: ：输入图像的通道数，默认为 3（RGB 图像）。
+            nc: 类别数量，如果提供则覆盖配置文件中的值。
+            anchors: 锚框（anchors），如果提供则覆盖配置文件中的值。
+        """
         super().__init__()
+
+        # 如果是字典，则直接使用该字典作为配置。
         if isinstance(cfg, dict):
-            self.yaml = cfg  # model dict
+            self.yaml = cfg  # 模型配置
         else:  # is *.yaml
+            # 如果是路径，则会读取 YAML 文件；
             import yaml  # for torch hub
             self.yaml_file = Path(cfg).name
             with open(cfg, encoding='ascii', errors='ignore') as f:
                 self.yaml = yaml.safe_load(f)  # model dict
 
-        # Define model
+        # 配置模型
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
         if nc and nc != self.yaml['nc']:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
@@ -393,59 +436,80 @@ class ClassificationModel(BaseModel):
         self.model = None
 
 
+
+
+# NOTE: 主要是对backbone和head进行解析，整个yolov5的网络结构这里
 def parse_model(d, ch):  # model_dict, input_channels(3)
+    """
+    Args:
+        d: 模型配置文件（yaml 文件）解析后的字典。
+        ch: 输入通道数，通常是一个列表，表示每一层的输入通道数。
+    Returns: 返回一个 PyTorch 模型（nn.Sequential）和一个保存层的索引列表（save）。
+    """
     # Parse a YOLOv5 model.yaml dictionary
     LOGGER.info(f"\n{'':>3}{'from':>18}{'n':>3}{'params':>10}  {'module':<40}{'arguments':<30}")
     anchors, nc, gd, gw, act = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple'], d.get('activation')
+    # 全激活函数
     if act:
-        Conv.default_act = eval(act)  # redefine default activation, i.e. Conv.default_act = nn.SiLU()
+        Conv.default_act = eval(act)  # 如果指定了激活函数，则将其设置为默认激活函数, 如 nn.SiLU()
         LOGGER.info(f"{colorstr('activation:')} {act}")  # print
-    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # 计算锚点框数量 na
+    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)  no = 输出通道数 no
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
-        m = eval(m) if isinstance(m, str) else m  # eval strings
+    # 遍历模型配置中的 backbone 和 head 部分，逐层解析并构建模型
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args  [输入来源,模块的重复次数,
+        # 模块类型, 模块的参数]
+        m = eval(m) if isinstance(m, str) else m  # 使用 eval(m) 将字符串形式的模块名称（如 "Conv"）转换为实际的 PyTorch 模块（如 Conv）。
         for j, a in enumerate(args):
             with contextlib.suppress(NameError):
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
 
-        n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        n = n_ = max(round(n * gd), 1) if n > 1 else n  # 深度缩放因子）用于调整模块的重复次数。
+        # 如果模块是卷积类（如 Conv, Bottleneck, C3 等）
         if m in {
                 Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
                 BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x}:
-            c1, c2 = ch[f], args[0]
+            # 计算输入通道 c1 和输出通道 c2
+            c1, c2 = ch[f], args[0]   # ch[f]就是说是ch[-1],上一层的输出， args[0]，参数中的第一个参数，即输出通道数。
             if c2 != no:  # if not output
-                c2 = make_divisible(c2 * gw, 8)
+                c2 = make_divisible(c2 * gw, 8)  # 宽度缩放因子用于调整输出通道数，使模型可以灵活地缩放。
 
             args = [c1, c2, *args[1:]]
             if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
-                args.insert(2, n)  # number of repeats
+                args.insert(2, n)  # 如果是c3模块...， 还需要插入n，即模块的重复次数。
                 n = 1
+        # 如果模块是 BatchNorm2d，设置输入通道数。
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
+        # 如果模块是 Concat，计算输出通道数为所有输入通道数的和。
         elif m is Concat:
-            c2 = sum(ch[x] for x in f)
-        # TODO: channel, gw, gd
+            c2 = sum(ch[x] for x in f)   # 特征融合
+        # 如果模块是 Detect 或 Segment，处理锚点框和输出通道数。
         elif m in {Detect, Segment}:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
             if m is Segment:
-                args[3] = make_divisible(args[3] * gw, 8)
+                args[3] = make_divisible(args[3] * gw, 8)  # 使用 make_divisible 函数确保通道数是 8 的倍数，以优化硬件性能。
+
+
+        # 如果模块是 Contract 或 Expand，调整通道数。
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
         else:
             c2 = ch[f]
-
+        # 根据模块类型和参数实例化模块，并计算参数数量。
         m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace('__main__.', '')  # module type
         np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
         LOGGER.info(f'{i:>3}{str(f):>18}{n_:>3}{np:10.0f}  {t:<40}{str(args):<30}')  # print
+        # save 列表记录了需要保存的层索引，用于后续的特征融合或检测头处理。也就是说方便后续的特征融合
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+        # 将每一层添加到 layers 列表中。
         layers.append(m_)
         if i == 0:
             ch = []

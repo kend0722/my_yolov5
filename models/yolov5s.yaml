@@ -2,8 +2,10 @@
 
 # Parameters
 nc: 80  # number of classes
-depth_multiple: 0.33  # model depth multiple
-width_multiple: 0.50  # layer channel multiple
+depth_multiple: 0.33  # model depth multiple  模型深度倍率
+width_multiple: 0.50  # layer channel multiple  # 模型宽度倍率 通道数
+
+# 三组特征图, 每组特征图对应的锚框
 anchors:
   - [10,13, 16,30, 33,23]  # P3/8
   - [30,61, 62,45, 59,119]  # P4/16
@@ -12,7 +14,8 @@ anchors:
 # YOLOv5 v6.0 backbone
 backbone:
   # [from, number, module, args]
-  [[-1, 1, Conv, [64, 6, 2, 2]],  # 0-P1/2
+  # [输入从哪里来, 重复几次, 具体用了哪个模块, 实例化模块需要穿的参数]
+  [[-1, 1, Conv, [64, 6, 2, 2]],  # 0-P1/2   第0层是卷积, 特征图变为原图的1/2
    [-1, 1, Conv, [128, 3, 2]],  # 1-P2/4
    [-1, 3, C3, [128]],
    [-1, 1, Conv, [256, 3, 2]],  # 3-P3/8
